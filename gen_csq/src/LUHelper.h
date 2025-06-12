@@ -15,11 +15,14 @@ public:
     std::vector<CSQ> csq;
 
 private:
-    int  readCSR();        // 读 CSR
-    int  readSEP();        // 读 seps
-    void buildCSQ();       // 划分 CSQ
-    void buildLayers();    // 波前法分层
-    void meanQuantile();   // 层的切分调度
+    int  readCSR();                 // 读 CSR
+    int  readSEP();                 // 读 seps
+    void buildCSQ();                // 划分 CSQ
+    void buildLayers();             // 波前法分层
+    void buildCompressedLayers();   // 压缩空节点的波前法分层
+    void meanQuantile();            // 层的切分调度
+
+    void test(); // test
 
 private:
     const std::string csq_path_, sep_path_, tree_path_;

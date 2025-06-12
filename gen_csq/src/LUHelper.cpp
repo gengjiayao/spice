@@ -17,10 +17,11 @@ int LUHelper::run() {
     if (readSEP() != 0) return 1;
 
     buildCSQ();
-    buildLayers();
-
+    // buildLayers();           // 没有去掉空节点的波前法
+    buildCompressedLayers();    // 去掉空节点的波前法
     meanQuantile();
 
+    // test();
 /*
     double total_time = cal_csq_time(layers_, csq);
     cout << "total time = " << total_time << "ms" << endl;
@@ -193,21 +194,149 @@ void LUHelper::buildLayers() {
     }
     in.close();
     
+    #ifdef PRINT_LAYER
+    int nn = 0;
         for (size_t i = 0; i < layers_.size(); ++i) {
-        #ifdef PRINT_LAYER
-            cout << "(nums=" << layers_[i].size() << ")" << " Layer " << i;
-            cout << ": ";
-        #endif
+            cout << "(" << layers_[i].size() << ")" << " Layer " << i << "\t";
+            nn++;
+            // cout << ":";
             for (int x: layers_[i]) {
-            #ifdef PRINT_LAYER
-                cout << "CSQ" << x << "(" << "dim=" << csq[x].n << ")" << " ";
-            #endif
-                csq[x].level = i;
+                // cout << "CSQ" << x << "(" << "dim=" << csq[x].n << ")" << " ";
             }
-        #ifdef PRINT_LAYER
-            cout<< endl;
-        #endif
+            // cout<< endl;
+            if (nn % 5 == 0) cout << endl;
         }
+        cout << endl;
+    #endif
+}
+
+
+/***********************************************
+* 读入依赖树数据，压缩空节点，波前法生成每一层的节点
+************************************************/
+void LUHelper::buildCompressedLayers() {
+    ifstream in(tree_path_);
+    if (!in) {
+        cerr << "打开 Tree 文件失败: " << tree_path_ << "\n";
+        return;
+    }
+
+    // 1. 读parent数组，找出根
+    int N;
+    in >> N;
+    vector<int> parent(N);
+    int root = -1;
+    for (int i = 0; i < N; ++i) {
+        in >> parent[i];
+        if (parent[i] < 0) root = i;
+    }
+    in.close();
+    
+    // 2. children[i] 存放节点 i 的所有孩子
+    vector<vector<int>> children(N);
+    for (int i = 0; i < N; ++i) {
+        int p = parent[i];
+        if (p >= 0) children[p].push_back(i);
+    }
+
+    // 3. 后续DFS压缩空结点
+    vector<char> deleted(N, 0);
+    function<void(int)> dfs = [&](int u) {
+        if (u < 0 || deleted[u]) return;
+        // 3.1 拷贝一份原始孩子列表
+        auto orig = children[u];
+        for (int c : orig) {
+            dfs(c);
+        }
+        // 3.2 如果是“空节点”(seps.first==seps.second)，就 splice out
+        auto &S = csq[u].seps;
+        if (S.first == S.second) {
+            int p = parent[u];
+            // 3.3 把活孩子接到 p 上
+            for (int c : orig) {
+                if (c >= 0 && !deleted[c]) {
+                    parent[c] = p;
+                    if (p >= 0)
+                        children[p].push_back(c);
+                }
+            }
+            // 3.4 从 p 的 children 把 u 删除
+            if (p >= 0) {
+                auto &vc = children[p];
+                vc.erase(remove(vc.begin(), vc.end(), u), vc.end());
+            }
+            // 3.5 如果 u 是根，挑一个活孩子当新根
+            if (u == root) {
+                int new_root = -1;
+                for (int c : orig)
+                    if (c >= 0 && !deleted[c]) { new_root = c; break; }
+                root = new_root;
+                if (root >= 0) parent[root] = -1;
+            }
+            // 3.6 标记删除并清空自己的 children
+            deleted[u] = 1;
+            children[u].clear();
+        }
+    };
+    if (root >= 0) dfs(root);
+    // cout << "root = " << root << endl;
+
+    int cnt = 0;
+    for (int i = 0; i < deleted.size(); i++) {
+        if (deleted[i] == 1) {
+            cnt++;
+        }
+    }
+    cout << "empty csq nums = " << cnt << endl;
+
+    // 4. 计算节点的度
+    vector<int> deg(N, 0);
+    vector<char> alive(N, 0);
+    for (int i = 0; i < N; ++i) {
+        if (deleted[i]) continue;
+        alive[i] = 1;
+        for (int c : children[i]) {
+            if (!deleted[c]) deg[i]++;
+        }
+    }
+
+    // 5. 入队，开始波前法遍历
+    queue<int> q;
+    for (int i = 0; i < N; ++i) {
+        if (alive[i] && deg[i] == 0) {
+            q.push(i);
+        }
+    }
+
+    layers_.clear();
+    while (!q.empty()) {
+        int sz = q.size();
+        layers_.emplace_back();
+        while (sz--) {
+            int u = q.front(); q.pop();
+            layers_.back().push_back(u);
+            csq[u].level = (int)layers_.size() - 1;
+            int p = parent[u];
+            if (p >= 0 && alive[p] && --deg[p] == 0) {
+                q.push(p);
+            }
+        }
+    }
+
+    #ifdef PRINT_LAYER
+    int nn = 0;
+        for (size_t i = 0; i < layers_.size(); ++i) {
+            // cout << "(" << layers_[i].size() << ")" << " Layer " << i << "\t";
+            nn++;
+            // cout << ":";
+            for (int x: layers_[i]) {
+                // cout << "CSQ" << x << "(" << "dim=" << csq[x].n << ")" << " ";
+            }
+            // cout<< endl;
+            // if (nn % 5 == 0) cout << endl;
+        }
+        // cout << endl;
+    #endif
 }
 
 pair<vector<int>, vector<int>> LUHelper::bucket_by_index_fast (
@@ -277,14 +406,14 @@ void LUHelper::meanQuantile() {
     for (auto [out, start] : scheduler) {
         for (int i = 0; i < start.size() - 1; ++i) {
             for (int j = start[i]; j < start[i + 1]; ++j) {
-                // cout << out[j] << " ";
             }
             if (start[i + 1] - start[i] > 0) {
-                // cout << endl;
                 cnts++;
             }
         }
-        // cout << endl;
     }
-    cout << "numbers of tensor = " << cnts << endl;
+}
+
+void LUHelper::test() {
+    
 }
