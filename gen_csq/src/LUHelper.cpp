@@ -21,7 +21,7 @@ int LUHelper::run() {
     buildCompressedLayers();    // 去掉空节点的波前法
     meanQuantile();
 
-    // test();
+    test();
 /*
     double total_time = cal_csq_time(layers_, csq);
     cout << "total time = " << total_time << "ms" << endl;
@@ -211,9 +211,11 @@ void LUHelper::buildLayers() {
 }
 
 
-/***********************************************
-* 读入依赖树数据，压缩空节点，波前法生成每一层的节点
-************************************************/
+/************************************
+ * 读入依赖树数据，插入 dummy root，
+ * 压缩空节点，波前法生成每一层的节点
+ * dummy 不存数据，也不进入 layers_
+ ************************************/
 void LUHelper::buildCompressedLayers() {
     ifstream in(tree_path_);
     if (!in) {
@@ -221,88 +223,109 @@ void LUHelper::buildCompressedLayers() {
         return;
     }
 
-    // 1. 读parent数组，找出根
+    // 1. —— 读 parent 数组，找出原始根 ——
     int N;
     in >> N;
-    vector<int> parent(N);
-    int root = -1;
+    vector<int> parent(N + 1, -1);
+    int orig_root = -1;
     for (int i = 0; i < N; ++i) {
         in >> parent[i];
-        if (parent[i] < 0) root = i;
+        if (parent[i] < 0) orig_root = i;
     }
     in.close();
-    
-    // 2. children[i] 存放节点 i 的所有孩子
-    vector<vector<int>> children(N);
+
+    // 2. —— 构建 children 列表 ——
+    vector<vector<int>> children(N + 1);
     for (int i = 0; i < N; ++i) {
-        int p = parent[i];
-        if (p >= 0) children[p].push_back(i);
+        if (parent[i] > 0) {
+            children[parent[i]].push_back(i);
+        }
     }
 
-    // 3. 后续DFS压缩空结点
-    vector<char> deleted(N, 0);
+    // 3. —— 扩容，插入 dummy root D = N ——
+    const int D = N;
+    parent[orig_root] = D;
+    children[D].push_back(orig_root);
+
+    // 准备 DFS 压缩
+    csq.resize(N + 1);
+    vector<char> deleted(N + 1, 0);
+    csq[D].seps = {0, 1}; // 确保seps不是"空"，DFS不会删它
+
+    // 4. —— DFS 压缩空节点 ——
+    int root = D;
     function<void(int)> dfs = [&](int u) {
-        if (u < 0 || deleted[u]) return;
-        // 3.1 拷贝一份原始孩子列表
-        auto orig = children[u];
-        for (int c : orig) {
+        if (deleted[u]) return;
+        // 先递归走完子树
+        for (int c : children[u]) {
             dfs(c);
         }
-        // 3.2 如果是“空节点”(seps.first==seps.second)，就 splice out
+
+        // 检查是否"空"节点（seps.first==seps.second）且不是 dummy
         auto &S = csq[u].seps;
-        if (S.first == S.second) {
+        if (u != D && S.first == S.second) {
             int p = parent[u];
-            // 3.3 把活孩子接到 p 上
-            for (int c : orig) {
-                if (c >= 0 && !deleted[c]) {
+            // 所有活孩子挂到 p
+            for (int c : children[u]) {
+                if (!deleted[c]) {
                     parent[c] = p;
-                    if (p >= 0)
-                        children[p].push_back(c);
                 }
             }
-            // 3.4 从 p 的 children 把 u 删除
-            if (p >= 0) {
-                auto &vc = children[p];
-                vc.erase(remove(vc.begin(), vc.end(), u), vc.end());
-            }
-            // 3.5 如果 u 是根，挑一个活孩子当新根
+            // 如果删的是当前根，挑个活孩子为新根
             if (u == root) {
-                int new_root = -1;
-                for (int c : orig)
-                    if (c >= 0 && !deleted[c]) { new_root = c; break; }
-                root = new_root;
+                root = -1;
+                for (int c : children[u]) {
+                    if (!deleted[c]) {
+                        root = c;
+                        break;
+                    }
+                }
                 if (root >= 0) parent[root] = -1;
             }
-            // 3.6 标记删除并清空自己的 children
             deleted[u] = 1;
-            children[u].clear();
         }
     };
-    if (root >= 0) dfs(root);
-    // cout << "root = " << root << endl;
+    dfs(root);
 
-    int cnt = 0;
-    for (int i = 0; i < deleted.size(); i++) {
-        if (deleted[i] == 1) {
-            cnt++;
-        }
-    }
-    cout << "empty csq nums = " << cnt << endl;
-
-    // 4. 计算节点的度
-    vector<int> deg(N, 0);
-    vector<char> alive(N, 0);
-    for (int i = 0; i < N; ++i) {
-        if (deleted[i]) continue;
-        alive[i] = 1;
-        for (int c : children[i]) {
-            if (!deleted[c]) deg[i]++;
-        }
+    // Debug: 打印删除的空节点数
+    {
+        int cnt = 0;
+        for (int i = 0; i < N; ++i)
+            if (deleted[i]) ++cnt;
+        cout << "empty csq nums = " << cnt << "\n";
     }
 
-    // 5. 入队，开始波前法遍历
+    // —— 4. 删除对临时 children 的占用 —— 
+    children.clear();
+    children.shrink_to_fit();
+
+    // —— 5. 线性重建 alive、deg、csq[].children —— 
+    vector<char> alive(N + 1, 0);
+    vector<int> deg(N + 1, 0);
+
+    for (int i = 0; i <= N; ++i) {
+        csq[i].children.clear();
+    }
+
+    // 标记 alive，并累加父节点度数
+    for (int u = 0; u <= N; ++u) {
+        if (u == D || deleted[u]) continue;
+        alive[u] = 1;
+    }
+
+    // 扫一遍 parent 数组：把每个活节点 u 挂到其活父亲 p
+    for (int u = 0; u <= N; ++u) {
+        if (!alive[u]) continue;
+        int p = parent[u];
+        if (p >= 0 && alive[p]) {
+            csq[p].children.push_back(u);
+            ++deg[p];
+        }
+    }
+
+    // —— 6. 波前法遍历 —— 
     queue<int> q;
-    for (int i = 0; i < N; ++i) {
+    for (int i = 0; i <= N; ++i) {
         if (alive[i] && deg[i] == 0) {
             q.push(i);
         }
@@ -326,16 +349,16 @@ void LUHelper::buildCompressedLayers() {
     #ifdef PRINT_LAYER
     int nn = 0;
         for (size_t i = 0; i < layers_.size(); ++i) {
-            // cout << "(" << layers_[i].size() << ")" << " Layer " << i << "\t";
+            cout << "(" << layers_[i].size() << ")" << " Layer " << i << "\t";
             nn++;
             // cout << ":";
             for (int x: layers_[i]) {
                 // cout << "CSQ" << x << "(" << "dim=" << csq[x].n << ")" << " ";
             }
             // cout<< endl;
-            // if (nn % 5 == 0) cout << endl;
+            if (nn % 5 == 0) cout << endl;
         }
-        // cout << endl;
+        cout << endl;
     #endif
 }
 
@@ -415,5 +438,11 @@ void LUHelper::meanQuantile() {
 }
 
 void LUHelper::test() {
-    
+    // for (int i = 0; i < csq.size(); ++i) {
+    //     cout << "csq " << i << " :";
+    //     for (auto c : csq[i].children) {
+    //         cout << c << " ";
+    //     }
+    //     cout << endl;
+    // }
 }

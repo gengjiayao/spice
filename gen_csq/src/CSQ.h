@@ -32,6 +32,7 @@ public:
     std::unordered_map<int ,int> rows_index_hash; // 原行与现行的映射
     std::pair<int, int> seps; // sep(start, end)
     std::unique_ptr<double[]> matrix; // 实际矩阵数据
+    std::vector<int> children; // 对应的孩子节点
 };
 
 #endif
