@@ -20,6 +20,7 @@ private:
     void buildCSQ();                // 划分 CSQ
     void buildLayers();             // 波前法分层
     void buildCompressedLayers();   // 压缩空节点的波前法分层
+    void buildUpdateNums(int);         // 构建Update算子需要收集的行
     void meanQuantile();            // 层的切分调度
 
     void test(); // test
@@ -27,18 +28,17 @@ private:
 private:
     const std::string csq_path_, sep_path_, tree_path_;
 
+    /************
+     * CSR数据
+    *************/
     int n_{0}, nnz_{0};
     std::vector<int>    row_ptr_;
     std::vector<int>    col_idx_;
     std::vector<double> val_;
 
-    // 快速指针区间
-    std::vector<interval> fast_ptr_;
+    std::vector<int> seps_; // sep数据
+    std::vector<interval> fast_ptr_; // 快速指针区间
 
-    // SEP 列表
-    std::vector<int> seps_;
-
-    // 最终层次结构
     std::vector<std::vector<int>> layers_; // 存储的是CSQ的块号
 };
 
