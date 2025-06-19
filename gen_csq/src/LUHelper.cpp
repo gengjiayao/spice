@@ -292,7 +292,7 @@ void LUHelper::buildCompressedLayers() {
         int cnt = 0;
         for (int i = 0; i < N; ++i)
             if (deleted[i]) ++cnt;
-        cout << "empty csq nums = " << cnt << "\n";
+        // cout << "empty csq nums = " << cnt << "\n";
     }
 
     // —— 4. 删除对临时 children 的占用 —— 
@@ -311,6 +311,7 @@ void LUHelper::buildCompressedLayers() {
     for (int u = 0; u <= N; ++u) {
         if (u == D || deleted[u]) continue;
         alive[u] = 1;
+        csq[u].alive = true;
     }
 
     // 扫一遍 parent 数组：把每个活节点 u 挂到其活父亲 p
@@ -337,6 +338,7 @@ void LUHelper::buildCompressedLayers() {
         layers_.emplace_back();
         while (sz--) {
             int u = q.front(); q.pop();
+            buildUpdateNums(u);
             layers_.back().push_back(u);
             csq[u].level = (int)layers_.size() - 1;
             int p = parent[u];
@@ -355,48 +357,11 @@ void LUHelper::buildCompressedLayers() {
             for (int x: layers_[i]) {
                 // cout << "CSQ" << x << "(" << "dim=" << csq[x].n << ")" << " ";
             }
-            // cout<< endl;
-            if (nn % 5 == 0) cout << endl;
+            cout<< endl;
+            // if (nn % 5 == 0) cout << endl;
         }
         cout << endl;
     #endif
-}
-
-pair<vector<int>, vector<int>> LUHelper::bucket_by_index_fast (
-    const vector<int>& csq_index,
-    const vector<int>& divide
-) {
-    int nC = csq_index.size();
-    int B  = int(divide.size()) - 1;
-    vector<int> cnt(B, 0);
-
-    // 1. 计数：看每个 A[C[k]] 属于哪个桶
-    for (int idx : csq_index) {
-        int x = csq[idx].n;
-        int j = int(upper_bound(divide.begin(), divide.end(), x) - divide.begin()) - 1;
-        if (0 <= j && j < B) {
-            cnt[j]++;
-        }
-    }
-
-    // 2. 前缀和 -> 计算每个桶在 out 中的起始位置
-    vector<int> bucket_start(B + 1, 0);
-    for (int i = 0; i < B; i++) {
-        bucket_start[i + 1] = bucket_start[i] + cnt[i];
-    }
-    // bucket_start[B] == 所有落在有效区间的元素总数 ≤ nC
-
-    // 3. scatter 写入
-    vector<int> out(nC);
-    vector<int> wp = bucket_start;  // 写指针，防止覆盖 bucket_start
-    for (int idx : csq_index) {
-        int x = csq[idx].n;
-        int j = int(upper_bound(divide.begin(), divide.end(), x) - divide.begin()) - 1;
-        if (0 <= j && j < B) {
-            out[wp[j]++] = idx;
-        }
-    }
-    return {out, bucket_start};
 }
 
 void LUHelper::meanQuantile() {
@@ -437,11 +402,125 @@ void LUHelper::meanQuantile() {
     }
 }
 
+void LUHelper::buildUpdateNums(int u) {
+    int bound = csq[u].seps.second;
+    const auto &assoc = csq[u].all_rows;
+
+    auto &Inter = csq[u].inter_pairs;
+    auto &Rem = csq[u].rem_pairs;
+    Inter.clear();
+    Rem.clear();
+
+    unordered_map<int, int> idx_inter, idx_rem; // 保证快速查找orig
+    idx_inter.reserve(csq[u].children.size() * 2);
+    idx_rem.reserve(csq[u].children.size() * 2);
+
+    // 1. 来自子节点的 rem_pairs
+    for (int v : csq[u].children) {
+        if (!csq[v].alive) continue;
+        for (auto &pr : csq[v].rem_pairs) {
+            int orig = pr.first;
+            for (int val : pr.second) {
+                bool isInter = binary_search(assoc.begin(), assoc.end(), val);
+                auto &mp_idx = isInter ? idx_inter : idx_rem;
+                auto &V = isInter ? Inter : Rem;
+
+                auto it = mp_idx.find(orig);
+                if (it == mp_idx.end()) {
+                    int new_pos = V.size();
+                    mp_idx[orig] = new_pos; // 建立快速查找映射
+                    V.emplace_back(orig, vector<int>{});
+                    it = mp_idx.find(orig);
+                }
+                V[it->second].second.push_back(val);
+            }
+        }
+    }
+
+    // 2. 本节点 assoc >= bound 也算 Rem (origin = u)
+    auto it0 = lower_bound(assoc.begin(), assoc.end(), bound);
+    for (; it0 != assoc.end(); ++it0) {
+        int val = *it0, orig = u;
+        auto it = idx_rem.find(orig);
+        if (it == idx_rem.end()) {
+            int new_pos = Rem.size();
+            idx_rem[orig] = new_pos; // 建立快速查找映射
+            Rem.emplace_back(orig, vector<int>{});
+            it = idx_rem.find(orig);
+        }
+        Rem[it->second].second.push_back(val);
+    }
+}
+
+pair<vector<int>, vector<int>> LUHelper::bucket_by_index_fast (
+    const vector<int>& csq_index,
+    const vector<int>& divide
+) {
+    int nC = csq_index.size();
+    int B  = int(divide.size()) - 1;
+    vector<int> cnt(B, 0);
+
+    // 1. 计数：看每个 A[C[k]] 属于哪个桶
+    for (int idx : csq_index) {
+        int x = csq[idx].n;
+        int j = int(upper_bound(divide.begin(), divide.end(), x) - divide.begin()) - 1;
+        if (0 <= j && j < B) {
+            cnt[j]++;
+        }
+    }
+
+    // 2. 前缀和 -> 计算每个桶在 out 中的起始位置
+    vector<int> bucket_start(B + 1, 0);
+    for (int i = 0; i < B; i++) {
+        bucket_start[i + 1] = bucket_start[i] + cnt[i];
+    }
+    // bucket_start[B] == 所有落在有效区间的元素总数 ≤ nC
+
+    // 3. scatter 写入
+    vector<int> out(nC);
+    vector<int> wp = bucket_start;  // 写指针，防止覆盖 bucket_start
+    for (int idx : csq_index) {
+        int x = csq[idx].n;
+        int j = int(upper_bound(divide.begin(), divide.end(), x) - divide.begin()) - 1;
+        if (0 <= j && j < B) {
+            out[wp[j]++] = idx;
+        }
+    }
+    return {out, bucket_start};
+}
+
 void LUHelper::test() {
+    // cout << "=====================parent=====================" << endl;
+    
     // for (int i = 0; i < csq.size(); ++i) {
-    //     cout << "csq " << i << " :";
+    //     if (csq[i].children.size() != 0) cout << "csq " << i << ": ";
     //     for (auto c : csq[i].children) {
     //         cout << c << " ";
+    //     }
+    //     if (csq[i].children.size() != 0) cout << endl;
+    // }
+
+    cout << "=====================UpdateNums=====================" << endl;
+    for (int i = 0; i < csq.size(); ++i) {
+        if (csq[i].children.size() != 0) cout << "csq " << i << ": ";
+        for (auto c : csq[i].inter_pairs) {
+            cout << c.first << " -> [ ";
+            for (auto cc : c.second)
+                cout << cc << " ";
+            cout << "] \t";
+        }
+        if (csq[i].children.size() != 0) cout << endl;
+    }
+
+    // cout << "=====================UpRem=====================" << endl;
+    // for (int i = 0; i < csq.size(); ++i) {
+    //     if (!csq[i].alive) continue;
+    //     cout << "csq " << i << ": ";
+    //     for (auto c : csq[i].rem_pairs) {
+    //         cout << c.first << " -> [ ";
+    //         for (auto cc : c.second)
+    //             cout << cc << " ";
+    //         cout << "] \t";
     //     }
     //     cout << endl;
     // }
