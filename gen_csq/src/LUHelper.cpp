@@ -20,6 +20,7 @@ int LUHelper::run() {
     // buildLayers();           // 没有去掉空节点的波前法
     buildCompressedLayers();    // 去掉空节点的波前法
     meanQuantile();
+    genUpdateNums();            // 生成Update算子需要的常量数据
 
     test();
 /*
@@ -487,6 +488,46 @@ pair<vector<int>, vector<int>> LUHelper::bucket_by_index_fast (
         }
     }
     return {out, bucket_start};
+}
+
+void LUHelper::print_update(initializer_list<vector<int>> all) {
+    cout << "==============================================" << endl;
+    for (auto const& v : all) {
+        for (auto const& e : v) {
+            cout << e << " ";
+        }
+        cout << endl;
+    }
+}
+
+void LUHelper::genUpdateNums() {
+    vector<int> src_b(2000), src_r(2000), src_c(2000);
+    vector<int> dst_b(2000), dst_r(2000), dst_c(2000);
+    for (auto const layer : layers_) {
+        src_b.clear(); src_r.clear(); src_c.clear();
+        dst_b.clear(); dst_r.clear(); dst_c.clear();
+        // idx 为当前 csq 节点
+        for (auto const idx : layer) {
+            // orig 为子 csq 节点
+            for (auto const [orig, rows] : csq[idx].inter_pairs) {
+                auto &hash_orig = csq[orig].rows_index_hash;
+                auto &hash_dst = csq[idx].rows_index_hash;
+                for (auto const row : rows) {
+                    for (auto const col : rows) {
+                        src_b.emplace_back(orig);
+                        src_r.emplace_back(hash_orig[row]);
+                        src_c.emplace_back(hash_orig[col]);
+
+                        dst_b.emplace_back(idx);
+                        dst_r.emplace_back(hash_dst[row]);
+                        dst_c.emplace_back(hash_dst[col]);
+                    }
+                }
+            }   
+        }
+        if (src_b.empty()) continue;
+        print_update({src_b, src_r, src_c, dst_b, dst_r, dst_c});
+    }
 }
 
 void LUHelper::test() {
